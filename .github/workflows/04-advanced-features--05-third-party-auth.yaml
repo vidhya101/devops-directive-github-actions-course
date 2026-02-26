@@ -1,29 +1,97 @@
-name: Third Party Auth
+name: Third Party Auth # This is the workflow name shown in the GitHub Actions UI
+
 on:
   workflow_dispatch:
+    # This workflow runs manually when someone clicks "Run workflow"
 
 jobs:
-  # ❌ PLEASE DO NOT USE THIS APPROACH!
-  auth-to-aws-static:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: "Configure AWS Credentials using static key"
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
-        with:
-          aws-region: us-east-2
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-  # ✅ PLEASE USE THIS APPROACH INSTEAD!
+  # ❌ PLEASE DO NOT USE THIS APPROACH!
+  # This job demonstrates the OLD and insecure way of authenticating to AWS
+  auth-to-aws-static:
+    runs-on: ubuntu-24.04 # Runs on a temporary Ubuntu virtual machine
+
+    steps:
+    - name: "Configure AWS Credentials using static key"
+      uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # Official AWS action
+      with:
+        aws-region: us-east-2 # AWS region where resources exist
+
+        # These are long-lived credentials stored in GitHub Secrets
+        # They were manually created in AWS IAM
+        # If leaked, attacker can use them outside GitHub too
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+
+        # Secret key paired with access key
+        # This is sensitive and dangerous if exposed
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # What this does:
+      # - Injects static AWS credentials into environment
+      # - AWS CLI inside the runner can now call AWS APIs
+      # - Credentials remain valid until manually rotated
+
+      # ✅ PLEASE USE THIS APPROACH INSTEAD!
+      # This job demonstrates the MODERN and secure way using OIDC
   auth-to-aws-oidc:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04 # Again runs on fresh temporary runner
+
     permissions:
       id-token: write
       contents: read
-# This is required for requesting the JWT for OIDC auth to AWS
+      # This allows the workflow to request a signed OIDC JWT token from GitHub.
+      # Without this permission, OIDC authentication will fail.
+
     steps:
-      - name: "Configure AWS Credentials - Action for GitHub Actions"
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
-        with:
-          aws-region: us-east-2
-          role-to-assume: arn:aws:iam::917774925227:role/github-actions-role
+    - name: "Configure AWS Credentials - Action for GitHub Actions"
+      uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # Same AWS action
+      with:
+        aws-region: us-east-2 # AWS region
+
+        # Instead of static keys, we provide a role ARN.
+        # AWS trusts GitHub as an identity provider.
+        # GitHub will request a temporary identity token.
+        # AWS will validate that token and issue short-lived credentials.
+        role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+      # What this does:
+      # - GitHub generates a signed OIDC JWT
+      # - AWS verifies the JWT
+      # - AWS issues temporary credentials (valid ~15 minutes)
+      # - No long-lived AWS keys are stored in GitHub
+      # - Credentials automatically expire
+
+
+      # ------------------------------------------------------------------------
+      # FLOW EXPLANATION (Layman Friendly)
+      # ------------------------------------------------------------------------
+
+      # First Job (Static Key - NOT Recommended):
+      #
+      # 1. Someone manually creates AWS Access Keys in AWS.
+      # 2. Those keys are stored inside GitHub Secrets.
+      # 3. Workflow injects those keys into the runner.
+      # 4. Runner can now access AWS using those long-lived credentials.
+      #
+      # Problem:
+      # - If someone leaks the secret, attacker can use it from anywhere.
+      # - Keys must be rotated manually.
+      # - High security risk.
+
+
+      # Second Job (OIDC - Recommended):
+      #
+      # 1. Workflow starts.
+      # 2. GitHub generates a short-lived identity token (JWT).
+      # 3. That token proves: "This workflow from this repo is running."
+      # 4. AWS checks:
+      #       - Is the repo allowed?
+      #       - Is the branch allowed?
+      #       - Is this role trusted?
+      # 5. If valid, AWS issues temporary credentials.
+      # 6. Runner uses those temporary credentials.
+      # 7. After workflow ends, credentials expire automatically.
+      #
+      # Benefits:
+      # - No AWS keys stored in GitHub.
+      # - Credentials expire automatically.
+      # - Can restrict by branch, environment, repo.
+      # - Much safer for production deployments.
